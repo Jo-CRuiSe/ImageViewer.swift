@@ -74,44 +74,98 @@ extension ImageViewerTransitionPresentationAnimator: UIViewControllerAnimatedTra
             return dummyImageView
     }
     
+    private func calculateAspectFitFrame(image: UIImage, in containerView: UIView) -> CGRect {
+        let containerSize = containerView.bounds.size
+        let imageSize = image.size
+        
+        guard imageSize.width > 0, imageSize.height > 0 else { return containerView.bounds }
+        
+        // 计算图片宽高比和容器宽高比
+        let imageRatio = imageSize.width / imageSize.height
+        let containerRatio = containerSize.width / containerSize.height
+        
+        var targetWidth: CGFloat
+        var targetHeight: CGFloat
+        
+        if imageRatio > containerRatio {
+            // 图片更宽，宽度撑满容器，高度自适应
+            targetWidth = containerSize.width
+            targetHeight = containerSize.width / imageRatio
+        } else {
+            // 图片更高，高度撑满容器，宽度自适应
+            targetHeight = containerSize.height
+            targetWidth = containerSize.height * imageRatio
+        }
+        
+        // 居中计算 Origin
+        let x = (containerSize.width - targetWidth) / 2
+        let y = (containerSize.height - targetHeight) / 2
+        
+        return CGRect(x: x, y: y, width: targetWidth, height: targetHeight)
+    }
+    
+    // MARK: - Animation Methods
+    
     private func presentAnimation(
-        transitionView:UIView,
+        transitionView: UIView,
         controller: UIViewController,
         duration: TimeInterval,
         completed: @escaping((Bool) -> Void)) {
-
-        guard
-            let transitionVC = controller as? ImageViewerTransitionViewControllerConvertible,
-            let sourceView = transitionVC.sourceView
-        else { return }
-    
-        sourceView.alpha = 0.0
-        controller.view.alpha = 0.0
-        
-        transitionView.addSubview(controller.view)
-        transitionVC.targetView?.alpha = 0.0
-        transitionVC.targetView?.tintColor = sourceView.tintColor
-        
-        let dummyImageView = createDummyImageView(
-            frame: sourceView.frameRelativeToWindow(),
-            image: sourceView.image)
-        dummyImageView.contentMode = .scaleAspectFit
-        dummyImageView.tintColor = sourceView.tintColor
-        transitionView.addSubview(dummyImageView)
-        
-        UIView.animate(withDuration: duration, animations: {
-            dummyImageView.frame = UIScreen.main.bounds
-            controller.view.alpha = 1.0
-        }) { [weak self] finished in
-            self?.observation = transitionVC.targetView?.observe(\.image, options: [.new, .initial]) { img, change in
-                if img.image != nil {
+            
+            guard
+                let transitionVC = controller as? ImageViewerTransitionViewControllerConvertible,
+                let sourceView = transitionVC.sourceView,
+                let image = sourceView.image
+            else { return }
+            
+            // 1. 准备初始状态
+            sourceView.alpha = 0.0
+            controller.view.alpha = 0.0 // 黑色背景先透明
+            
+            transitionView.addSubview(controller.view)
+            transitionVC.targetView?.alpha = 0.0
+            transitionVC.targetView?.tintColor = sourceView.tintColor
+            
+            // 2. 创建临时过渡视图
+            // 注意：这里我们手动创建，确保 contentMode 是 .scaleAspectFill (和缩略图一致)
+            let dummyImageView = UIImageView(frame: sourceView.frameRelativeToWindow())
+            dummyImageView.image = image
+            dummyImageView.contentMode = .scaleAspectFill // 关键：始终保持 Fill，不要改成 Fit
+            dummyImageView.clipsToBounds = true
+            dummyImageView.tintColor = sourceView.tintColor
+            transitionView.addSubview(dummyImageView)
+            
+            // 3. 计算目标位置
+            // 如果我们直接动画到全屏 bounds，因为是 Fill 模式，图片会被裁剪（这导致了你看到的“放大占满全屏”）
+            // 所以我们要动画到“图片在全屏 Fit 下的实际位置”
+            let finalFrame = calculateAspectFitFrame(image: image, in: transitionView)
+            
+            // 4. 执行动画
+            UIView.animate(withDuration: duration, delay: 0, options: .curveEaseInOut, animations: {
+                // 让 Frame 变成计算出的实际大小
+                // 因为此时 Frame 的宽高比 = 图片的宽高比，且 Mode 是 Fill
+                // 所以视觉效果就变成了 Fit，而且没有突变
+                dummyImageView.frame = finalFrame
+                
+                // 背景控制器（黑色背景）淡入，填补图片周围的空白
+                controller.view.alpha = 1.0
+            }) { finished in
+                // 动画结束，移除临时视图，显示真正的目标视图
+                self.observation = transitionVC.targetView?.observe(\.image, options: [.new, .initial]) { img, change in
+                    if img.image != nil {
+                        transitionVC.targetView?.alpha = 1.0
+                        dummyImageView.removeFromSuperview()
+                        completed(finished)
+                    }
+                }
+                // 防御性代码：如果不需要等待图片加载，直接完成
+                if self.observation == nil {
                     transitionVC.targetView?.alpha = 1.0
                     dummyImageView.removeFromSuperview()
                     completed(finished)
                 }
             }
         }
-    }
     
     private func dismissAnimation(
         transitionView:UIView,
