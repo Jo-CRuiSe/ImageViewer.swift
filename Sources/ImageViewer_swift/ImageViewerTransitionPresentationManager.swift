@@ -167,38 +167,69 @@ extension ImageViewerTransitionPresentationAnimator: UIViewControllerAnimatedTra
             }
         }
     
+       /// 执行关闭动画：从全屏缩小回缩略图
+    /// 动画流程：
+    /// 1. 创建临时图片视图，位置和大小与目标视图（全屏）相同
+    /// 2. 隐藏目标视图
+    /// 3. 执行动画：临时视图缩小回源视图的位置（或淡出消失）
+    /// 4. 动画完成后，恢复源视图的显示并移除目标视图控制器
     private func dismissAnimation(
-        transitionView:UIView,
+        transitionView: UIView,
         controller: UIViewController,
-        duration:TimeInterval,
+        duration: TimeInterval,
         completed: @escaping((Bool) -> Void)) {
         
         guard
-            let transitionVC = controller as? ImageViewerTransitionViewControllerConvertible
+            let transitionVC = controller as? ImageViewerTransitionViewControllerConvertible,
+            let targetView = transitionVC.targetView,
+            let image = targetView.image
         else { return }
-  
-        let sourceView = transitionVC.sourceView
-        let targetView = transitionVC.targetView
         
-        let dummyImageView = createDummyImageView(
-            frame: targetView?.frameRelativeToWindow() ?? UIScreen.main.bounds,
-            image: targetView?.image)
-        dummyImageView.tintColor = sourceView?.tintColor
+        let sourceView = transitionVC.sourceView
+        
+        // 1. 准备初始状态（关键修改）
+        
+        // 获取 targetView 当前在 transitionView 坐标系中的位置
+        // 这包含了一切拖拽、平移、缩放后的状态
+        let currentTargetFrame = targetView.convert(targetView.bounds, to: transitionView)
+        
+        // 计算图片在这个 frame 里的实际显示区域 (即 AspectFit 后的 Rect)
+        // 即使 targetView 很大且有黑边，这个计算能帮我们拿到图片实际的像素区域
+        let startFrame = calculateVisibleImageFrame(image: image, insideRect: currentTargetFrame)
+        
+        // 2. 创建临时视图
+        let dummyImageView = UIImageView(frame: startFrame)
+        dummyImageView.image = image
+        dummyImageView.contentMode = .scaleAspectFill // 保持 Fill，确保动画平滑
+        dummyImageView.clipsToBounds = true
+        dummyImageView.tintColor = targetView.tintColor
+        // 如果有圆角需求：dummyImageView.layer.cornerRadius = sourceView?.layer.cornerRadius ?? 0
+        
         transitionView.addSubview(dummyImageView)
-        targetView?.isHidden = true
-      
-        controller.view.alpha = 1.0
-        UIView.animate(withDuration: duration, animations: {
+        
+        // 隐藏真实视图
+        targetView.isHidden = true
+        controller.view.alpha = 1.0 // 此时背景可能已经是半透明的（如果你在拖拽过程中改变了透明度）
+        
+        // 3. 执行动画
+        UIView.animate(withDuration: duration, delay: 0, options: .curveEaseInOut, animations: {
+            
             if let sourceView = sourceView {
-                // return to original position
+                // 目标：缩略图的位置
                 dummyImageView.frame = sourceView.frameRelativeToWindow()
             } else {
-                // just disappear
+                // 异常兜底：如果没有缩略图，就原地消失
                 dummyImageView.alpha = 0.0
+                dummyImageView.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
             }
+            
+            // 背景完全透明
             controller.view.alpha = 0.0
+            
         }) { finished in
+            // 4. 清理
             sourceView?.alpha = 1.0
+            dummyImageView.removeFromSuperview()
             controller.view.removeFromSuperview()
             completed(finished)
         }
